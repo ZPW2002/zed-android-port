@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     ffi::c_void,
+    ffi::OsString,
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
@@ -15,7 +16,7 @@ use gpui::{
     Action, AnyWindowHandle, BackgroundExecutor, Bounds, ClipboardItem, CursorStyle,
     DummyKeyboardMapper, ForegroundExecutor, Keymap, Menu, MenuItem, PathPromptOptions, Pixels,
     Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
-    PlatformWindow, PriorityQueueReceiver, RunnableVariant, Task, ThermalState, WindowAppearance,
+    ActivityGuard, PlatformWindow, PriorityQueueReceiver, RunnableVariant, Task, ThermalState, WindowAppearance,
     WindowParams,
 };
 use gpui_wgpu::GpuContext;
@@ -165,7 +166,7 @@ fn install_choreographer_callback() {
 #[derive(Default)]
 pub(crate) struct PlatformHandlers {
     pub(crate) open_urls: Option<Box<dyn FnMut(Vec<String>)>>,
-    pub(crate) quit: Option<Box<dyn FnMut()>>,
+    pub(crate) quit: Option<Box<dyn FnMut() -> bool>>,
     pub(crate) reopen: Option<Box<dyn FnMut()>>,
     pub(crate) app_menu_action: Option<Box<dyn FnMut(&dyn Action)>>,
     pub(crate) will_open_app_menu: Option<Box<dyn FnMut()>>,
@@ -1240,7 +1241,7 @@ impl Platform for AndroidPlatform {
         std::process::exit(0);
     }
 
-    fn restart(&self, _binary_path: Option<PathBuf>) {}
+    fn restart(&self, _binary_path: Option<PathBuf>, _arguments: Vec<OsString>) {}
     fn activate(&self, _ignoring_other_apps: bool) {}
     fn hide(&self) {}
     fn hide_other_apps(&self) {}
@@ -1367,7 +1368,7 @@ impl Platform for AndroidPlatform {
     fn reveal_path(&self, _path: &Path) {}
     fn open_with_system(&self, _path: &Path) {}
 
-    fn on_quit(&self, callback: Box<dyn FnMut()>) {
+    fn on_quit(&self, callback: Box<dyn FnMut() -> bool>) {
         self.common.borrow_mut().callbacks.quit = Some(callback);
     }
     fn on_reopen(&self, callback: Box<dyn FnMut()>) {
@@ -1378,6 +1379,19 @@ impl Platform for AndroidPlatform {
         // lifecycle (onResume etc.) is a different concept and already
         // flows through the app-lifecycle path. Drop the callback.
     }
+    fn on_system_sleep(&self, _callback: Box<dyn FnMut()>) {
+        // Android exposes no system sleep/wake signal to apps; see
+        // on_system_wake above. The OS suspends the process itself.
+    }
+    fn prevent_idle_sleep(&self, _reason: &str) -> Task<Result<ActivityGuard>> {
+        // Keep-screen-on is an Activity window flag on Android
+        // (FLAG_KEEP_SCREEN_ON), which the hosting Activity owns rather
+        // than the platform layer. The only consumer today is the agent
+        // panel (agent.prevent_idle_sleep), and AI surfaces are disabled
+        // on the Android port, so a no-op guard is correct for now.
+        Task::ready(Ok(ActivityGuard::noop()))
+    }
+
     fn set_menus(&self, _menus: Vec<Menu>, _keymap: &Keymap) {}
     fn set_dock_menu(&self, _menu: Vec<MenuItem>, _keymap: &Keymap) {}
     fn on_app_menu_action(&self, callback: Box<dyn FnMut(&dyn Action)>) {

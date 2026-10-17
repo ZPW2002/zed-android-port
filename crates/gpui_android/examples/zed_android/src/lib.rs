@@ -1102,7 +1102,7 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     snippet_provider::init(cx);
     snippets_ui::init(cx);
     image_viewer::init(cx);
-    csv_preview::init(cx);
+    tabular_data_preview::init(cx);
     svg_preview::init(cx);
     markdown_preview::init(cx);
     encoding_selector::init(cx);

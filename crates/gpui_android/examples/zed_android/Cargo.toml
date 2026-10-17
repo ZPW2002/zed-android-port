@@ -19,7 +19,7 @@ askpass = { path = "../../../askpass" }
 assets = { path = "../../../assets" }
 client = { path = "../../../client" }
 command_palette = { path = "../../../command_palette" }
-csv_preview = { path = "../../../csv_preview" }
+tabular_data_preview = { path = "../../../tabular_data_preview" }
 db = { path = "../../../db" }
 diagnostics = { path = "../../../diagnostics" }
 editor = { path = "../../../editor" }

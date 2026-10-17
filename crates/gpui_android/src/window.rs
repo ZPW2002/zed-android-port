@@ -15,7 +15,8 @@ use gpui::{
     AnyWindowHandle, Bounds, Capslock, DevicePixels, DispatchEventResult, GpuSpecs, Modifiers,
     PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Pixels,
     Point, PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams, point, px, size,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams, WindowVisibility, point,
+    px, size,
 };
 use gpui_wgpu::{GpuContext, WgpuRenderer, WgpuSurfaceConfig, wgpu};
 
@@ -650,6 +651,16 @@ impl PlatformWindow for AndroidWindow {
         let android_app = self.ptr.state.borrow().android_app.clone();
         crate::multi_window::activate_extra_activity(&android_app, window_id);
     }
+
+    fn visibility(&self) -> WindowVisibility {
+        // On Android the SurfaceView keeps being presented for as long as
+        // its hosting Activity is alive: the OS pauses the Activity instead
+        // of hiding the window, and those transitions already arrive via
+        // the app-lifecycle callbacks.
+        WindowVisibility::Visible
+    }
+
+    fn on_visibility_change(&self, _callback: Box<dyn FnMut(WindowVisibility)>) {}
 
     fn is_active(&self) -> bool {
         true
