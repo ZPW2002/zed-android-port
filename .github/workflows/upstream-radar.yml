@@ -1,0 +1,153 @@
+name: Upstream radar
+
+# 每日检查两个“上游”并把结果写进固定的 issue：
+#   1) Dylanmurzello/zed-android-port —— 本 fork 的父仓库，自动同步 fork main
+#   2) zed-industries/zed            —— Zdroid 的真正上游，只做差距监控（不自动合并）
+on:
+  schedule:
+    - cron: "17 1 * * *"   # 01:17 UTC = 09:17 Asia/Shanghai
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: upstream-radar
+  cancel-in-progress: false
+
+env:
+  FORK_REPO: ZPW2002/zed-android-port
+  ZDROID_REPO: Dylanmurzello/zed-android-port
+  ZED_REPO: zed-industries/zed
+  ZED_BASE: 87e698fb6fd09e69a16c66ae83060ac1e3af3fd6
+  RADAR_TITLE: "Upstream radar"
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync fork main from Dylanmurzello/zed-android-port
+        id: sync
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          fork_before=$(gh api "repos/$FORK_REPO/commits/main" --jq .sha)
+          upstream_head=$(gh api "repos/$ZDROID_REPO/commits/main" --jq .sha)
+          echo "fork_before=$fork_before" >> "$GITHUB_OUTPUT"
+          if [ "$fork_before" = "$upstream_head" ]; then
+            echo "sync_result=already-up-to-date" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          set +e
+          out=$(gh api -X POST "repos/$FORK_REPO/merge-upstream" -f branch=main 2>&1)
+          rc=$?
+          set -e
+          if [ $rc -eq 0 ]; then
+            mt=$(printf '%s' "$out" | jq -r '.merge_type' 2>/dev/null)
+            echo "sync_result=merged ($mt)" >> "$GITHUB_OUTPUT"
+          else
+            echo "sync_result=FAILED: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Collect upstream state
+        id: state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          fork_main=$(gh api "repos/$FORK_REPO/commits/main" --jq '.sha[0:8]')
+          zdroid_head=$(gh api "repos/$ZDROID_REPO/commits/main" --jq '.sha[0:8] + " (" + (.commit.author.date[0:10]) + ")"')
+          zdroid_rel=$(gh api "repos/$ZDROID_REPO/releases?per_page=1" --jq '.[0] | .tag_name + " (" + (.published_at[0:10]) + ")"')
+          zdroid_days=$(gh api "repos/$ZDROID_REPO/releases?per_page=1" --jq '((now - (.[0].published_at|fromdateiso8601)) / 86400 | floor)')
+
+          zed_stable=$(gh api "repos/$ZED_REPO/releases?per_page=100" --jq '[.[] | select(.prerelease == false)][0] | .tag_name + " (" + (.published_at[0:10]) + ")"')
+          zed_stable_tag=$(gh api "repos/$ZED_REPO/releases?per_page=100" --jq '[.[] | select(.prerelease == false)][0].tag_name')
+          zed_main=$(gh api "repos/$ZED_REPO/commits/main" --jq '.sha[0:12] + " (" + (.commit.author.date[0:10]) + ")"')
+
+          commits_stable=$(gh api "repos/$ZED_REPO/compare/$ZED_BASE...$zed_stable_tag" --jq .ahead_by)
+          commits_main=$(gh api "repos/$ZED_REPO/compare/$ZED_BASE...main" --jq .ahead_by)
+          releases_since=$(gh api "repos/$ZED_REPO/releases?per_page=100" --jq '[.[] | select(.prerelease == false and .published_at > "2026-08-07T00:00:00Z")] | length')
+
+          gh api "repos/$ZED_REPO/contents/crates?ref=$ZED_BASE" --jq '.[].name' | sort > /tmp/crates-base.txt
+          gh api "repos/$ZED_REPO/contents/crates?ref=main" --jq '.[].name' | sort > /tmp/crates-main.txt
+          crates_added=$(comm -13 /tmp/crates-base.txt /tmp/crates-main.txt | tr '\n' ' ')
+          crates_removed=$(comm -23 /tmp/crates-base.txt /tmp/crates-main.txt | tr '\n' ' ')
+
+          trait_base=$(curl -fsSL "https://raw.githubusercontent.com/$ZED_REPO/$ZED_BASE/crates/gpui/src/platform.rs" | grep -c '^    fn ' || true)
+          trait_main=$(curl -fsSL "https://raw.githubusercontent.com/$ZED_REPO/main/crates/gpui/src/platform.rs" | grep -c '^    fn ' || true)
+
+          mkdir -p /tmp/state
+          jq -n \
+            --arg fork_main "$fork_main" \
+            --arg zdroid_head "$zdroid_head" \
+            --arg zdroid_rel "$zdroid_rel" \
+            --arg zdroid_days "$zdroid_days" \
+            --arg zed_stable "$zed_stable" \
+            --arg zed_main "$zed_main" \
+            --arg commits_stable "$commits_stable" \
+            --arg commits_main "$commits_main" \
+            --arg releases_since "$releases_since" \
+            --arg crates_added "$crates_added" \
+            --arg crates_removed "$crates_removed" \
+            --arg trait_base "$trait_base" \
+            --arg trait_main "$trait_main" \
+            '{fork_main:$fork_main, zdroid_head:$zdroid_head, zdroid_rel:$zdroid_rel, zdroid_days:$zdroid_days, zed_stable:$zed_stable, zed_main:$zed_main, commits_stable:$commits_stable, commits_main:$commits_main, releases_since:$releases_since, crates_added:$crates_added, crates_removed:$crates_removed, trait_base:$trait_base, trait_main:$trait_main}' \
+            > /tmp/state/state.json
+          cat /tmp/state/state.json
+
+      - name: Render and upsert radar issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SYNC_RESULT: ${{ steps.sync.outputs.sync_result }}
+        run: |
+          set -euo pipefail
+          state=/tmp/state/state.json
+          get() { jq -r --arg k "$1" '.[$k]' "$state"; }
+
+          digest_core=$(jq -S . "$state" | sha256sum | cut -d' ' -f1)
+          digest=$(printf '%s|%s' "$digest_core" "$SYNC_RESULT" | sha256sum | cut -d' ' -f1)
+
+          existing=$(gh issue list --repo "$FORK_REPO" --state all --search "$RADAR_TITLE in:title" --json number,body --jq '.[0] // empty' 2>/dev/null || true)
+          existing_number=$(printf '%s' "$existing" | jq -r '.number // empty' 2>/dev/null || true)
+          existing_body=$(printf '%s' "$existing" | jq -r '.body // empty' 2>/dev/null || true)
+
+          if printf '%s' "$existing_body" | grep -q "radar-digest: $digest"; then
+            echo "state unchanged, skipping issue edit"
+            exit 0
+          fi
+
+          now=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M %Z')
+          {
+            printf '<!-- radar-digest: %s -->\n\n' "$digest"
+            printf '# Upstream radar (Zdroid / Zed)\n\n'
+            printf '_更新时间: %s · 由 .github/workflows/upstream-radar.yml 自动写入_\n\n' "$now"
+            printf '> 本 issue 是自动维护的单一状态页，不要手改（手改会在下次运行时被覆盖）。\n\n'
+            printf '## 1. fork 父仓库 — Dylanmurzello/zed-android-port\n\n'
+            printf '| 项 | 值 |\n|---|---|\n'
+            printf '| 上游 main | %s |\n' "$(get zdroid_head)"
+            printf '| 你的 fork main | %s |\n' "$(get fork_main)"
+            printf '| 本次自动同步 | %s |\n' "$SYNC_RESULT"
+            printf '| 最新 release | %s |\n' "$(get zdroid_rel)"
+            printf '| 距最新 release | %s 天 |\n' "$(get zdroid_days)"
+            printf '\n## 2. 真正的上游 — zed-industries/zed\n\n'
+            printf '| 项 | 值 |\n|---|---|\n'
+            printf '| 最新 stable | %s |\n' "$(get zed_stable)"
+            printf '| main HEAD | %s |\n' "$(get zed_main)"
+            printf '| 距基线提交数 | 到 stable: **%s** · 到 main: **%s** |\n' "$(get commits_stable)" "$(get commits_main)"
+            printf '| 基线以来 stable 发布 | %s 个 |\n' "$(get releases_since)"
+            printf '| crates 目录变化 | 新增: %s<br>删除: %s |\n' "$(get crates_added)" "$(get crates_removed)"
+            printf '| gpui/src/platform.rs 中 fn 行数（近似平台接口规模） | %s → %s |\n' "$(get trait_base)" "$(get trait_main)"
+            printf '\n## 3. 怎么做\n\n'
+            printf -- '- 合并 Zed stable tag 到 fork: 运行工作区里的 ops/zdroid-zed-sync.sh vX.Y.Z\n'
+            printf -- '- fork 与父仓库同步: 本 workflow 每天自动做；失败时手动执行 gh api -X POST repos/ZPW2002/zed-android-port/merge-upstream -f branch=main\n'
+            printf -- '- 节奏建议: 按月跟 stable tag（约 350–400 提交/月）；main 只用于 cherry-pick Android 相关修复\n'
+          } > /tmp/radar-body.md
+
+          if [ -n "$existing_number" ]; then
+            gh issue edit "$existing_number" --repo "$FORK_REPO" --body-file /tmp/radar-body.md
+            gh issue comment "$existing_number" --repo "$FORK_REPO" --body "上游状态有变化: Zed stable $(get zed_stable)，距基线 $(get commits_main) 个提交。" || true
+          else
+            gh issue create --repo "$FORK_REPO" --title "$RADAR_TITLE" --body-file /tmp/radar-body.md
+          fi
