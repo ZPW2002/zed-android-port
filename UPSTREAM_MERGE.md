@@ -133,3 +133,17 @@ Either way: update the corresponding workaround doc under `crates/gpui_android/d
 ## When in doubt
 
 `git log --oneline upstream/main..HEAD` shows everything we've added on top of upstream. If you're unsure whether a file is ours or theirs, that log is the source of truth. (The count grows every cycle — ~350 commits at the 2026-08 merge — so run the log rather than trusting this sentence.)
+
+## Sync log
+
+### 2026-10-17 - zed v1.16 (87e698fb) -> v1.24.2 (fb69067)
+
+- Target: stable tag `v1.24.2` (fb69067729cb16a7f6135e2c1600c26a28c59659, 2026-10-14), 910 commits since the 2026-08-07 baseline `87e698fb`.
+- Conflicts: 53 unmerged paths on the first pass - 17 content conflicts and 36 delete/modify (upstream CI/legal/nix files this repo keeps deleted) - plus the silent classes described above.
+- Diff vs the pre-merge main: 1494 files, +274,004/-76,012.
+- New upstream crates wired into the Android boot: `call_hierarchy`, `lsp_command_selector`, `tabular_data_preview` (renamed from `csv_preview`). `extension_suggest`/`file_content` arrive transitively; Emmet lives in an extension, not a core crate.
+- Trait/API drift handled: `Platform::{on_system_sleep, prevent_idle_sleep}`, `PlatformWindow::{visibility, on_visibility_change}`, `restart(binary_path, arguments)`, `on_quit(() -> bool)`, `Window::last_input_was_touch` (upstream now owns it), `RequestFrameOptions::{signal_at, signal_source}`, `WgpuRenderer::gpu_specs` -> Option, `RealFs::new` -> Arc<Self>, `GoToDeclaration`/`GoToTypeDefinition` gained `open_results_in`.
+- Fork patches kept: dock `during_drag` two-phase snap on top of upstream's `resize_panel_sizes`/`reset_panel_sizes`; terminal `sync_pty` + smooth scrollback merged with upstream's `PtyResources`/`mouse_input_mode`; wgpu embedder clear color via `self.clear_color`; Android/webpki split in `http_client_tls`.
+- Example workspace: `[patch.crates-io]` re-mirrored from the root `Cargo.toml`; `merman*` and `rust-embed` pinned to the root lockfile versions (a fresh resolve picks merman 0.8.0 / rust-embed 8.13 and breaks the SVG macro and RustEmbed impls); example `Cargo.lock` regenerated and committed.
+- Gates: `cargo ndk --platform 26 -t arm64-v8a check` passes (2026-10-17). Desktop `cargo check --workspace` was blocked in the sync environment by the prebuilt WebRTC release-asset download; rerun on a machine that can fetch it, or point `LK_CUSTOM_WEBRTC` at an extracted build.
+- Not verified on device: full `cargo ndk build` + gradle release build + smoke pass are still pending; do them before the next public release.

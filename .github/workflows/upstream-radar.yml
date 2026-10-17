@@ -20,8 +20,8 @@ concurrency:
 env:
   FORK_REPO: ZPW2002/zed-android-port
   ZED_REPO: zed-industries/zed
-  ZED_BASE: 87e698fb6fd09e69a16c66ae83060ac1e3af3fd6
-  ZED_BASE_VERSION: "1.16.0"
+  ZED_BASE: fb69067729cb16a7f6135e2c1600c26a28c59659
+  ZED_BASE_VERSION: "1.24.2"
   RADAR_TITLE: "Zed upstream radar"
 
 jobs:
