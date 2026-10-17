@@ -1,120 +1,108 @@
-name: Upstream radar
+name: Zed upstream radar
 
-# 每日检查两个“上游”并把结果写进固定的 issue：
-#   1) Dylanmurzello/zed-android-port —— 本 fork 的父仓库，自动同步 fork main
-#   2) zed-industries/zed            —— Zdroid 的真正上游，只做差距监控（不自动合并）
+# 只跟踪真正的上游 zed-industries/zed，不涉及 fork 来源仓库。
+# 每天把“我们的基线 -> 上游 stable / main”的差距和 Android 相关信号写进一个置顶 issue。
+# 前置：ZED_BASE 是当前 fork main 所基于的 Zed 提交；每次成功合并一个 Zed tag 后更新它，
+# 并同步更新 ZED_BASE_VERSION。
 on:
   schedule:
     - cron: "17 1 * * *"   # 01:17 UTC = 09:17 Asia/Shanghai
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   issues: write
 
 concurrency:
-  group: upstream-radar
+  group: zed-upstream-radar
   cancel-in-progress: false
 
 env:
   FORK_REPO: ZPW2002/zed-android-port
-  ZDROID_REPO: Dylanmurzello/zed-android-port
   ZED_REPO: zed-industries/zed
   ZED_BASE: 87e698fb6fd09e69a16c66ae83060ac1e3af3fd6
-  RADAR_TITLE: "Upstream radar"
+  ZED_BASE_VERSION: "1.16.0"
+  RADAR_TITLE: "Zed upstream radar"
 
 jobs:
   radar:
     runs-on: ubuntu-latest
     steps:
-      - name: Sync fork main from Dylanmurzello/zed-android-port
-        id: sync
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -uo pipefail
-          fork_before=$(gh api "repos/$FORK_REPO/commits/main" --jq .sha)
-          upstream_head=$(gh api "repos/$ZDROID_REPO/commits/main" --jq .sha)
-          echo "fork_before=$fork_before" >> "$GITHUB_OUTPUT"
-          if [ "$fork_before" = "$upstream_head" ]; then
-            echo "sync_result=already-up-to-date" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          set +e
-          out=$(gh api -X POST "repos/$FORK_REPO/merge-upstream" -f branch=main 2>&1)
-          rc=$?
-          set -e
-          if [ $rc -eq 0 ]; then
-            mt=$(printf '%s' "$out" | jq -r '.merge_type' 2>/dev/null)
-            case "$mt" in
-              none)         echo "sync_result=已是最新（fork 含自动化提交，无需合并）" >> "$GITHUB_OUTPUT" ;;
-              merge)        echo "sync_result=已合并上游新提交" >> "$GITHUB_OUTPUT" ;;
-              fast-forward) echo "sync_result=已快进到上游 main" >> "$GITHUB_OUTPUT" ;;
-              *)            echo "sync_result=已同步 ($mt)" >> "$GITHUB_OUTPUT" ;;
-            esac
-          else
-            echo "sync_result=FAILED: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Collect upstream state
+      - name: Collect Zed upstream state
         id: state
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
           fork_main=$(gh api "repos/$FORK_REPO/commits/main" --jq '.sha[0:8]')
-          fork_extra=$(gh api "repos/$FORK_REPO/compare/$(gh api "repos/$ZDROID_REPO/commits/main" --jq .sha)...main" --jq .ahead_by 2>/dev/null || echo '?')
-          zdroid_head=$(gh api "repos/$ZDROID_REPO/commits/main" --jq '.sha[0:8] + " (" + (.commit.author.date[0:10]) + ")"')
-          zdroid_rel=$(gh api "repos/$ZDROID_REPO/releases?per_page=1" --jq '.[0] | .tag_name + " (" + (.published_at[0:10]) + ")"')
-          zdroid_days=$(gh api "repos/$ZDROID_REPO/releases?per_page=1" --jq '((now - (.[0].published_at|fromdateiso8601)) / 86400 | floor)')
+          base_date=$(gh api "repos/$ZED_REPO/commits/$ZED_BASE" --jq '.commit.author.date[0:10]')
+          base_behind_days=$(gh api "repos/$ZED_REPO/commits/$ZED_BASE" --jq '((now - (.commit.author.date|fromdateiso8601)) / 86400 | floor)')
 
           zed_stable=$(gh api "repos/$ZED_REPO/releases?per_page=100" --jq '[.[] | select(.prerelease == false)][0] | .tag_name + " (" + (.published_at[0:10]) + ")"')
           zed_stable_tag=$(gh api "repos/$ZED_REPO/releases?per_page=100" --jq '[.[] | select(.prerelease == false)][0].tag_name')
+          zed_stable_version=$(echo "$zed_stable_tag" | sed 's/^v//')
+          zed_pre=$(gh api "repos/$ZED_REPO/releases?per_page=100" --jq '[.[] | select(.prerelease == true)][0] | .tag_name + " (" + (.published_at[0:10]) + ")"')
           zed_main=$(gh api "repos/$ZED_REPO/commits/main" --jq '.sha[0:12] + " (" + (.commit.author.date[0:10]) + ")"')
 
           commits_stable=$(gh api "repos/$ZED_REPO/compare/$ZED_BASE...$zed_stable_tag" --jq .ahead_by)
           commits_main=$(gh api "repos/$ZED_REPO/compare/$ZED_BASE...main" --jq .ahead_by)
           releases_since=$(gh api "repos/$ZED_REPO/releases?per_page=100" --jq '[.[] | select(.prerelease == false and .published_at > "2026-08-07T00:00:00Z")] | length')
 
+          base_minor=$(echo "$ZED_BASE_VERSION" | awk -F. '{print $1*100 + $2}')
+          latest_minor=$(echo "$zed_stable_version" | awk -F. '{print $1*100 + $2}')
+          behind_minor=$((latest_minor - base_minor))
+
           gh api "repos/$ZED_REPO/contents/crates?ref=$ZED_BASE" --jq '.[].name' | sort > /tmp/crates-base.txt
           gh api "repos/$ZED_REPO/contents/crates?ref=main" --jq '.[].name' | sort > /tmp/crates-main.txt
           crates_added=$(comm -13 /tmp/crates-base.txt /tmp/crates-main.txt | tr '\n' ' ')
           crates_removed=$(comm -23 /tmp/crates-base.txt /tmp/crates-main.txt | tr '\n' ' ')
 
-          trait_base=$(curl -fsSL "https://raw.githubusercontent.com/$ZED_REPO/$ZED_BASE/crates/gpui/src/platform.rs" | grep -c '^    fn ' || true)
-          trait_main=$(curl -fsSL "https://raw.githubusercontent.com/$ZED_REPO/main/crates/gpui/src/platform.rs" | grep -c '^    fn ' || true)
+          # 用 contents API 而不是 raw.githubusercontent.com：本机网络对 raw 域偶发不通，Actions 里两者都可以
+          trait_base=$(gh api "repos/$ZED_REPO/contents/crates/gpui/src/platform.rs?ref=$ZED_BASE" --jq .content | tr -d '\n' | base64 -d 2>/dev/null | grep -c '^    fn ' || true)
+          trait_main=$(gh api "repos/$ZED_REPO/contents/crates/gpui/src/platform.rs?ref=main" --jq .content | tr -d '\n' | base64 -d 2>/dev/null | grep -c '^    fn ' || true)
+
+          if gh api "repos/$ZED_REPO/contents/crates/gpui_android" --silent >/dev/null 2>&1; then gpui_android="已存在"; else gpui_android="不存在"; fi
+          if gh api "repos/$ZED_REPO/contents/crates/gpui_ios" --silent >/dev/null 2>&1; then gpui_ios="已存在"; else gpui_ios="不存在"; fi
+          android_issues=$(gh api "search/issues?q=repo:$ZED_REPO+android+in:title+is:issue&per_page=1" --jq .total_count 2>/dev/null || echo "?")
+          android_prs=$(gh api "search/issues?q=repo:$ZED_REPO+android+in:title+is:pr&per_page=1" --jq .total_count 2>/dev/null || echo "?")
+          roadmap_android=$(gh api repos/mikayla-maki/gpui-projects/issues/12 --jq .state 2>/dev/null || echo "?")
 
           mkdir -p /tmp/state
           jq -n \
             --arg fork_main "$fork_main" \
-            --arg zdroid_head "$zdroid_head" \
-            --arg fork_extra "$fork_extra" \
-            --arg zdroid_rel "$zdroid_rel" \
-            --arg zdroid_days "$zdroid_days" \
+            --arg base_date "$base_date" \
+            --arg base_behind_days "$base_behind_days" \
             --arg zed_stable "$zed_stable" \
+            --arg zed_stable_tag "$zed_stable_tag" \
+            --arg zed_pre "$zed_pre" \
             --arg zed_main "$zed_main" \
             --arg commits_stable "$commits_stable" \
             --arg commits_main "$commits_main" \
             --arg releases_since "$releases_since" \
+            --arg behind_minor "$behind_minor" \
             --arg crates_added "$crates_added" \
             --arg crates_removed "$crates_removed" \
             --arg trait_base "$trait_base" \
             --arg trait_main "$trait_main" \
-            '{fork_main:$fork_main, zdroid_head:$zdroid_head, fork_extra:$fork_extra, zdroid_rel:$zdroid_rel, zdroid_days:$zdroid_days, zed_stable:$zed_stable, zed_main:$zed_main, commits_stable:$commits_stable, commits_main:$commits_main, releases_since:$releases_since, crates_added:$crates_added, crates_removed:$crates_removed, trait_base:$trait_base, trait_main:$trait_main}' \
+            --arg gpui_android "$gpui_android" \
+            --arg gpui_ios "$gpui_ios" \
+            --arg android_issues "$android_issues" \
+            --arg android_prs "$android_prs" \
+            --arg roadmap_android "$roadmap_android" \
+            '{fork_main:$fork_main, base_date:$base_date, base_behind_days:$base_behind_days, zed_stable:$zed_stable, zed_stable_tag:$zed_stable_tag, zed_pre:$zed_pre, zed_main:$zed_main, commits_stable:$commits_stable, commits_main:$commits_main, releases_since:$releases_since, behind_minor:$behind_minor, crates_added:$crates_added, crates_removed:$crates_removed, trait_base:$trait_base, trait_main:$trait_main, gpui_android:$gpui_android, gpui_ios:$gpui_ios, android_issues:$android_issues, android_prs:$android_prs, roadmap_android:$roadmap_android}' \
             > /tmp/state/state.json
           cat /tmp/state/state.json
 
       - name: Render and upsert radar issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SYNC_RESULT: ${{ steps.sync.outputs.sync_result }}
         run: |
           set -euo pipefail
           state=/tmp/state/state.json
           get() { jq -r --arg k "$1" '.[$k]' "$state"; }
 
-          digest_core=$(jq -S . "$state" | sha256sum | cut -d' ' -f1)
-          digest=$(printf '%s|%s' "$digest_core" "$SYNC_RESULT" | sha256sum | cut -d' ' -f1)
+          digest=$(jq -S . "$state" | sha256sum | cut -d' ' -f1)
 
           existing=$(gh issue list --repo "$FORK_REPO" --state all --search "$RADAR_TITLE in:title" --json number,body --jq '.[0] // empty' 2>/dev/null || true)
           existing_number=$(printf '%s' "$existing" | jq -r '.number // empty' 2>/dev/null || true)
@@ -128,33 +116,48 @@ jobs:
           now=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M %Z')
           {
             printf '<!-- radar-digest: %s -->\n\n' "$digest"
-            printf '# Upstream radar (Zdroid / Zed)\n\n'
+            printf '# Zed upstream radar\n\n'
             printf '_更新时间: %s · 由 .github/workflows/upstream-radar.yml 自动写入_\n\n' "$now"
-            printf '> 本 issue 是自动维护的单一状态页，不要手改（手改会在下次运行时被覆盖）。\n\n'
-            printf '## 1. fork 父仓库 — Dylanmurzello/zed-android-port\n\n'
-            printf '| 项 | 值 |\n|---|---|\n'
-            printf '| 上游 main | %s |\n' "$(get zdroid_head)"
-            printf '| 你的 fork main | %s（相对上游多 %s 个自动化提交） |\n' "$(get fork_main)" "$(get fork_extra)"
-            printf '| 本次自动同步 | %s |\n' "$SYNC_RESULT"
-            printf '| 最新 release | %s |\n' "$(get zdroid_rel)"
-            printf '| 距最新 release | %s 天 |\n' "$(get zdroid_days)"
-            printf '\n## 2. 真正的上游 — zed-industries/zed\n\n'
+            printf '> 只跟踪 zed-industries/zed。数据没变时不会改动本 issue；手改会被下次运行覆盖。\n\n'
+            printf '## 1. 上游状态\n\n'
             printf '| 项 | 值 |\n|---|---|\n'
             printf '| 最新 stable | %s |\n' "$(get zed_stable)"
+            printf '| 最新 pre-release | %s |\n' "$(get zed_pre)"
             printf '| main HEAD | %s |\n' "$(get zed_main)"
-            printf '| 距基线提交数 | 到 stable: **%s** · 到 main: **%s** |\n' "$(get commits_stable)" "$(get commits_main)"
+            printf '| 我们停在 | Zed %s · 提交 %s · %s（%s 天前） |\n' "$ZED_BASE_VERSION" "$ZED_BASE" "$(get base_date)" "$(get base_behind_days)"
+            printf '| 落后 | **%s 个 minor** · 到 stable **%s** 个提交 · 到 main **%s** 个提交 |\n' "$(get behind_minor)" "$(get commits_stable)" "$(get commits_main)"
             printf '| 基线以来 stable 发布 | %s 个 |\n' "$(get releases_since)"
-            printf '| crates 目录变化 | 新增: %s<br>删除: %s |\n' "$(get crates_added)" "$(get crates_removed)"
-            printf '| gpui/src/platform.rs 中 fn 行数（近似平台接口规模） | %s → %s |\n' "$(get trait_base)" "$(get trait_main)"
-            printf '\n## 3. 怎么做\n\n'
-            printf -- '- 合并 Zed stable tag 到 fork: 运行工作区里的 ops/zdroid-zed-sync.sh vX.Y.Z\n'
-            printf -- '- fork 与父仓库同步: 本 workflow 每天自动做；失败时手动执行 gh api -X POST repos/ZPW2002/zed-android-port/merge-upstream -f branch=main\n'
-            printf -- '- 节奏建议: 按月跟 stable tag（约 350–400 提交/月）；main 只用于 cherry-pick Android 相关修复\n'
+            printf '\n## 2. Android 信号（决定我们还要不要自维护后端）\n\n'
+            printf '| 项 | 值 |\n|---|---|\n'
+            printf '| 上游 crates/gpui_android | %s |\n' "$(get gpui_android)"
+            printf '| 上游 crates/gpui_ios | %s |\n' "$(get gpui_ios)"
+            printf '| 上游 android issue 数（标题含 android） | %s |\n' "$(get android_issues)"
+            printf '| 上游 android PR 数（标题含 android） | %s |\n' "$(get android_prs)"
+            printf '| 官方 Android 追踪 issue（gpui-projects#12） | %s |\n' "$(get roadmap_android)"
+            printf '\n## 3. 下次合并会撞上的变更\n\n'
+            printf '| 项 | 值 |\n|---|---|\n'
+            printf '| crate 目录 | 新增: %s<br>删除: %s |\n' "$(get crates_added)" "$(get crates_removed)"
+            printf '| gpui/src/platform.rs 的 fn 行数（平台接口规模） | %s → %s |\n' "$(get trait_base)" "$(get trait_main)"
+            printf '\n## 4. 怎么做\n\n'
+            printf -- '- 合并一个 stable tag: 在本地 zdroid-fork 仓库运行 ops/zdroid-zed-sync.sh %s\n' "$(get zed_stable_tag)"
+            printf -- '- 节奏建议: 按月跟 stable（约 350–400 提交/次）；main 只用于 cherry-pick Android/GPUI 相关修复\n'
+            printf -- '- 合并完成后把本 workflow 里的 ZED_BASE / ZED_BASE_VERSION 更新为新基线\n'
           } > /tmp/radar-body.md
 
           if [ -n "$existing_number" ]; then
             gh issue edit "$existing_number" --repo "$FORK_REPO" --body-file /tmp/radar-body.md
-            gh issue comment "$existing_number" --repo "$FORK_REPO" --body "上游状态有变化: Zed stable $(get zed_stable)，距基线 $(get commits_main) 个提交。" || true
+            gh issue comment "$existing_number" --repo "$FORK_REPO" --body "上游状态有变化: Zed stable $(get zed_stable)，我们落后 $(get commits_main) 个提交。" || true
           else
             gh issue create --repo "$FORK_REPO" --title "$RADAR_TITLE" --body-file /tmp/radar-body.md
           fi
+
+      - name: Step summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "## Zed upstream radar"
+            echo "- latest stable: $(gh api "repos/$ZED_REPO/releases?per_page=100" --jq '[.[] | select(.prerelease == false)][0].tag_name')"
+            echo "- main: $(gh api "repos/$ZED_REPO/commits/main" --jq .sha)"
+          } >> "$GITHUB_STEP_SUMMARY"
