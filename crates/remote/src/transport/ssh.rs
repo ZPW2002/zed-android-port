@@ -17,7 +17,7 @@ use paths::remote_server_dir_relative;
 use release_channel::{AppVersion, ReleaseChannel};
 use rpc::proto::Envelope;
 use semver::Version;
-pub use settings::SshPortForwardOption;
+pub use settings_content::SshPortForwardOption;
 use smol::fs;
 use std::{
     net::IpAddr,
@@ -112,6 +112,27 @@ fn bracket_ipv6(host: &str) -> String {
     }
 }
 
+// Quote paths for sftp batch parsing and double backslashes for POSIX glob();
+// Win32-OpenSSH accepts the same encoding.
+fn escape_sftp_path(path: &str) -> String {
+    let mut escaped = String::with_capacity(path.len() + 2);
+    escaped.push('"');
+    for character in path.chars() {
+        if character == '"' || character == '\\' {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped.push('"');
+    escaped
+}
+
+fn sftp_put_command(source_path: &str, destination_path: &str) -> String {
+    let source = escape_sftp_path(source_path);
+    let destination = escape_sftp_path(destination_path);
+    format!("put {source} {destination}\n")
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SshConnectionOptions {
     pub host: SshConnectionHost,
@@ -126,8 +147,8 @@ pub struct SshConnectionOptions {
     pub upload_binary_over_ssh: bool,
 }
 
-impl From<settings::SshConnection> for SshConnectionOptions {
-    fn from(val: settings::SshConnection) -> Self {
+impl From<settings_content::SshConnection> for SshConnectionOptions {
+    fn from(val: settings_content::SshConnection) -> Self {
         SshConnectionOptions {
             host: val.host.to_string().into(),
             username: val.username,
@@ -422,8 +443,10 @@ impl RemoteConnection for SshRemoteConnection {
         let src_path_display = src_path.display().to_string();
 
         let mut sftp_command = self.build_sftp_command();
+        sftp_command.kill_on_drop(true);
         let mut scp_command =
             self.build_scp_command(&src_path, &dest_path_str, Some(&["-C", "-r"]));
+        scp_command.kill_on_drop(true);
 
         cx.background_spawn(async move {
             // We will try SFTP first, and if that fails, we will fall back to SCP.
@@ -641,6 +664,7 @@ async fn find_existing_control_master(
 impl SshRemoteConnection {
     pub(crate) async fn new(
         connection_options: SshConnectionOptions,
+        known_os: Option<RemoteOs>,
         delegate: Arc<dyn RemoteClientDelegate>,
         cx: &mut AsyncApp,
     ) -> Result<Self> {
@@ -665,9 +689,11 @@ impl SshRemoteConnection {
             let socket = SshSocket::new(connection_options, reused_path).await?;
             (socket, None)
         } else {
-            let askpass_delegate = askpass::AskPassDelegate::new(cx, {
+            let askpass_delegate = askpass::AskPassDelegate::new_with_cancellation(cx, {
                 let delegate = delegate.clone();
-                move |prompt, tx, cx| delegate.ask_password(prompt, tx, cx)
+                move |prompt, tx, cancellation, cx| {
+                    delegate.ask_password(prompt, tx, cancellation, cx)
+                }
             });
 
             let mut askpass =
@@ -735,9 +761,11 @@ impl SshRemoteConnection {
 
         #[cfg(windows)]
         let (socket, master_process_option) = {
-            let askpass_delegate = askpass::AskPassDelegate::new(cx, {
+            let askpass_delegate = askpass::AskPassDelegate::new_with_cancellation(cx, {
                 let delegate = delegate.clone();
-                move |prompt, tx, cx| delegate.ask_password(prompt, tx, cx)
+                move |prompt, tx, cancellation, cx| {
+                    delegate.ask_password(prompt, tx, cancellation, cx)
+                }
             });
 
             let mut askpass =
@@ -808,7 +836,10 @@ impl SshRemoteConnection {
             (socket, Some(master_process))
         };
 
-        let is_windows = socket.probe_is_windows().await;
+        let is_windows = match known_os {
+            Some(os) => os.is_windows(),
+            None => socket.probe_is_windows().await,
+        };
         log::info!("Remote is windows: {}", is_windows);
 
         let ssh_shell = socket.shell(is_windows).await;
@@ -1291,7 +1322,7 @@ impl SshRemoteConnection {
         if Self::is_sftp_available().await {
             log::debug!("using SFTP for file upload");
             let mut command = self.build_sftp_command();
-            let sftp_batch = format!("put {src_path_display} {dest_path_str}\n");
+            let sftp_batch = sftp_put_command(&src_path_display, &dest_path_str);
 
             let mut child = command.spawn()?;
             if let Some(mut stdin) = child.stdin.take() {
@@ -1991,7 +2022,7 @@ fn build_command_posix(
         )?;
         for arg in input_args {
             let arg = ssh_shell_kind.try_quote(&arg).context("shell quoting")?;
-            write!(exec, " {}", &arg)?;
+            write!(exec, " {arg}")?;
         }
     } else {
         write!(exec, "{ssh_shell} -l")?;
@@ -2085,7 +2116,7 @@ fn build_command_windows(
         )?;
         for arg in input_args {
             let arg = shell_kind.try_quote(arg).context("shell quoting")?;
-            write!(exec, " {}", &arg)?;
+            write!(exec, " {arg}")?;
         }
     } else {
         // Launch an interactive shell session
@@ -2265,6 +2296,58 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_sftp_put_command_quotes_paths() {
+        assert_eq!(
+            sftp_put_command(
+                "/tmp/Zed Repro/remote_server",
+                ".zed_server/downloaded server",
+            ),
+            "put \"/tmp/Zed Repro/remote_server\" \".zed_server/downloaded server\"\n"
+        );
+    }
+
+    #[test]
+    fn test_sftp_put_command_escapes_quotes_in_paths() {
+        assert_eq!(
+            sftp_put_command(
+                r#"/tmp/Zed "Nightly"/remote_server"#,
+                ".zed_server/remote_server",
+            ),
+            "put \"/tmp/Zed \\\"Nightly\\\"/remote_server\" \".zed_server/remote_server\"\n"
+        );
+    }
+
+    #[test]
+    fn test_sftp_put_command_doubles_trailing_destination_backslash_before_closing_quote() {
+        assert_eq!(
+            sftp_put_command("/tmp/remote_server", r"C:\zed server\"),
+            "put \"/tmp/remote_server\" \"C:\\\\zed server\\\\\"\n"
+        );
+    }
+
+    #[test]
+    fn test_sftp_put_command_doubles_source_backslashes_for_posix_glob() {
+        assert_eq!(
+            sftp_put_command(
+                r"/tmp/zed\server/remote_server",
+                ".zed_server/remote_server",
+            ),
+            "put \"/tmp/zed\\\\server/remote_server\" \".zed_server/remote_server\"\n"
+        );
+    }
+
+    #[test]
+    fn test_sftp_put_command_doubles_windows_source_backslashes_on_all_platforms() {
+        assert_eq!(
+            sftp_put_command(
+                r"C:\Users\Smit\Zed Repro\remote_server",
+                ".zed_server/remote_server",
+            ),
+            "put \"C:\\\\Users\\\\Smit\\\\Zed Repro\\\\remote_server\" \".zed_server/remote_server\"\n"
+        );
     }
 
     #[test]

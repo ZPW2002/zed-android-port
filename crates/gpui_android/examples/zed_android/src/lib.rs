@@ -747,7 +747,7 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     let workspace_store = cx.new(|cx| WorkspaceStore::new(client.clone(), cx));
     info!("zed_android: UserStore + WorkspaceStore constructed");
 
-    let fs: Arc<dyn Fs> = Arc::new(RealFs::new(None, cx.background_executor().clone()));
+    let fs: Arc<dyn Fs> = RealFs::new(None, cx.background_executor().clone());
     <dyn Fs>::set_global(fs.clone(), cx);
     // Real NodeRuntime, mirroring crates/zed/src/main.rs:496-518. The
     // earlier port stage stubbed this out as `NodeRuntime::unavailable()`
@@ -1095,6 +1095,7 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     file_finder::init(cx);
     tab_switcher::init(cx);
     outline::init(cx);
+    call_hierarchy::init(cx);
     project_symbols::init(cx);
     project_panel::init(cx);
     outline_panel::init(cx);
@@ -1102,12 +1103,13 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     snippet_provider::init(cx);
     snippets_ui::init(cx);
     image_viewer::init(cx);
-    csv_preview::init(cx);
+    tabular_data_preview::init(cx);
     svg_preview::init(cx);
     markdown_preview::init(cx);
     encoding_selector::init(cx);
     language_selector::init(cx);
     line_ending_selector::init(cx);
+    lsp_command_selector::init(cx);
     toolchain_selector::init(cx);
     theme_selector::init(cx);
     settings_profile_selector::init(cx);
