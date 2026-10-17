@@ -402,6 +402,7 @@ impl AndroidWindowStatePtr {
             callback(RequestFrameOptions {
                 require_presentation: false,
                 force_render,
+                ..Default::default()
             });
             self.callbacks.borrow_mut().request_frame = Some(callback);
         }
@@ -832,7 +833,7 @@ impl PlatformWindow for AndroidWindow {
             .borrow()
             .renderer
             .as_ref()
-            .map(|r| r.gpu_specs())
+            .and_then(|r| r.gpu_specs())
     }
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>) {}

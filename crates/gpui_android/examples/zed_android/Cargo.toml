@@ -18,6 +18,7 @@ jni = "0.21"
 askpass = { path = "../../../askpass" }
 assets = { path = "../../../assets" }
 client = { path = "../../../client" }
+call_hierarchy = { path = "../../../call_hierarchy" }
 command_palette = { path = "../../../command_palette" }
 tabular_data_preview = { path = "../../../tabular_data_preview" }
 db = { path = "../../../db" }
@@ -54,6 +55,7 @@ onboarding = { path = "../../../onboarding" }
 outline = { path = "../../../outline" }
 outline_panel = { path = "../../../outline_panel" }
 log = "0.4"
+lsp_command_selector = { path = "../../../lsp_command_selector" }
 multi_buffer = { path = "../../../multi_buffer" }
 notifications = { path = "../../../notifications" }
 paths = { path = "../../../paths" }
@@ -101,22 +103,24 @@ ui = { path = "../../../ui" }
 menu = { path = "../../../menu" }
 auto_update = { path = "../../../auto_update" }
 
-# Mirror of the root workspace's [patch.crates-io]. Cargo only honors
+# Mirror of the root workspace's [patch.crates-io].
+# Cargo only honors
 # [patch] from the current workspace root, and this example is its own
 # workspace — without the mirror, every zed-industries fork here resolves
 # from crates.io instead, which only works while the upstream fork happens
 # to stay API-compatible. Keep this table in sync with the root Cargo.toml
 # on every upstream merge (UPSTREAM_MERGE.md step).
 [patch.crates-io]
+tree-sitter-language = { git = "https://github.com/tree-sitter/tree-sitter", rev = "43623ec9bf0eaaf7113285c46e8a09018f181b18" }
 async-process = { git = "https://github.com/zed-industries/async-process.git", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }
 async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
 windows-capture = { git = "https://github.com/zed-industries/windows-capture.git", rev = "f0d6c1b6691db75461b732f6d5ff56eed002eeb9" }
-calloop = { git = "https://github.com/zed-industries/calloop" }
-livekit = { git = "https://github.com/zed-industries/livekit-rust-sdks", rev = "d0e27be0cdad89eadab3e36207cda0a2b6e359ee" }
-libwebrtc = { git = "https://github.com/zed-industries/livekit-rust-sdks", rev = "d0e27be0cdad89eadab3e36207cda0a2b6e359ee" }
-notify = { git = "https://github.com/zed-industries/notify", rev = "0890bbb8ca40a4b5d1f67031698dd7918b37d991" }
-notify-types = { git = "https://github.com/zed-industries/notify", rev = "0890bbb8ca40a4b5d1f67031698dd7918b37d991" }
-webrtc-sys = { git = "https://github.com/zed-industries/livekit-rust-sdks", rev = "d0e27be0cdad89eadab3e36207cda0a2b6e359ee" }
+calloop = { git = "https://github.com/zed-industries/calloop", rev = "3759371fee14c40066d64777e2a36b6ffcc22590" }
+livekit = { git = "https://github.com/zed-industries/livekit-rust-sdks", rev = "0a1c519cfce9b365229026b55de9b9dbdb6fed3c" }
+libwebrtc = { git = "https://github.com/zed-industries/livekit-rust-sdks", rev = "0a1c519cfce9b365229026b55de9b9dbdb6fed3c" }
+notify = { git = "https://github.com/zed-industries/notify", rev = "d842f16b2716bd60f09caf3ae3a894237ab38f54" }
+notify-types = { git = "https://github.com/zed-industries/notify", rev = "d842f16b2716bd60f09caf3ae3a894237ab38f54" }
+webrtc-sys = { git = "https://github.com/zed-industries/livekit-rust-sdks", rev = "0a1c519cfce9b365229026b55de9b9dbdb6fed3c" }
 
 # Debug builds embed unwind/DWARF tables that overflow llvm-strip's ELF
 # parser at our binary size (2GB+). Drop debug info on Android — backtraces
